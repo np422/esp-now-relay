@@ -23,19 +23,21 @@
 #include "../../esp-now-gw/main/esp_msg_types.h"
 
 #define QUEUE_SIZE     20
-#define GPIO_RELAY    5
-#define GPIO_RELAY_SEL (1ULL<<GPIO_RELAY)
 #define ESP_INTR_FLAG_DEFAULT 0
 
 const uint8_t my_mac[ESP_NOW_ETH_ALEN] = { 0xde, 0xad, 0xbe, 0xef, 0x22, 0x00 };
 const uint8_t gw_mac[ESP_NOW_ETH_ALEN] = { 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0x00 };
-const char* PROG = "relay";
-static xQueueHandle send_queue;
-// esp_timer_get_time returns usec, not millis
-uint8_t relay_state = 0;
+const uint8_t gpio_relays[MAX_RELAYS] = {27, 0, 0, 0, 0, 0, 0, 0};
+
 
 #define TAG "relay-00"
+#define NOTFOUND 200
 
+const char* PROG = "relay";
+static xQueueHandle send_queue;
+
+// esp_timer_get_time returns usec, not millis
+uint8_t relay_states[MAX_RELAYS] = {0,0,0,0,0,0,0,0};
 uint8_t read_mac[ESP_NOW_ETH_ALEN];
 
 static void send_reg_msg() {
@@ -60,7 +62,6 @@ static void send_reg_msg() {
 static void periodic_timer_callback(void* arg) {
     send_reg_msg();
 }
-
 
 static void my_espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status) {
     if (status == ESP_NOW_SEND_SUCCESS ) {
@@ -88,22 +89,24 @@ static void my_espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int 
         relay_set_message_t rmsg;
         relay_status_t foo;
         memcpy(&rmsg, recv_msg->message, sizeof(relay_set_message_t));
-        foo = rmsg.relay_status[0];
-        switch (foo) {
+        for (uint8_t i = 0; i< MAX_RELAYS ; i++) {
+            foo = rmsg.relay_status[i];
+            switch (foo) {
             case ON:
-                gpio_set_level(GPIO_RELAY, 1);
-                relay_state = 1;
+                gpio_set_level(gpio_relays[i], 1);
+                relay_states[i] = 1;
                 break;
             case OFF:
-                gpio_set_level(GPIO_RELAY, 0);
-                relay_state = 0;
+                gpio_set_level(gpio_relays[i], 0);
+                relay_states[i] = 0;
                 break;
             case TOGGLE:
-                relay_state = relay_state == 0 ? 1 : 0;
-                gpio_set_level(GPIO_RELAY, relay_state);
+                relay_states[i] = relay_states[i] == 0 ? 1 : 0;
+                gpio_set_level(gpio_relays[i], relay_states[i]);
                 break;
             default:
                 break;
+            }
         }
         break;
     case RELAY_GET:
@@ -157,12 +160,16 @@ static void send_task(void *foo) {
 void gpio_init() {
     gpio_config_t io_conf;
 
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.pin_bit_mask = GPIO_RELAY_SEL;
-    io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pull_up_en = 0;
-    io_conf.pull_down_en = 0;
-    gpio_config(&io_conf);
+    for (uint8_t i = 0; i< MAX_RELAYS ; i++) {
+        if ( gpio_relays[i] != 0 ) {
+            io_conf.intr_type = GPIO_INTR_DISABLE;
+            io_conf.pin_bit_mask =  (1ULL<< gpio_relays[i]);
+            io_conf.mode = GPIO_MODE_OUTPUT;
+            io_conf.pull_up_en = 0;
+            io_conf.pull_down_en = 0;
+            gpio_config(&io_conf);
+        }
+    }
 }
 
 void timer_init() {
@@ -185,6 +192,7 @@ void app_main(void)
         ESP_ERROR_CHECK( nvs_flash_erase() );
         ret = nvs_flash_init();
     }
+
     ESP_ERROR_CHECK( ret );
     ESP_ERROR_CHECK(esp_base_mac_addr_set(my_mac));
     esp_netif_create_default_wifi_sta();
